@@ -1,0 +1,80 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@import 'leaflet/dist/leaflet.css';
+
+@import url('https://fonts.googleapis.com/css2?family=Inter:ital,opsz,wght@0,14..32,100..900;1,14..32,100..900&display=swap');
+
+:root {
+  --font: 'Inter', system-ui, sans-serif;
+
+  --bg:        #f4f6fb;
+  --surface:   #ffffff;
+  --surface2:  #f0f3f9;
+  --border:    #dde3f0;
+  --text:      #0f172a;
+  --text2:     #475569;
+  --text3:     #94a3b8;
+  --red:       #dc2626;
+  --orange:    #ea580c;
+  --amber:     #d97706;
+  --green:     #16a34a;
+  --blue:      #2563eb;
+  --shadow:    0 1px 3px rgba(0,0,0,.08), 0 4px 12px rgba(0,0,0,.06);
+  --shadow-lg: 0 8px 32px rgba(0,0,0,.12);
+}
+
+[data-dark] {
+  --bg:        #000000;
+  --surface:   #0a0a0a;
+  --surface2:  #111111;
+  --border:    #222222;
+  --text:      #f0f0f0;
+  --text2:     #a0a0a0;
+  --text3:     #505050;
+  --red:       #f87171;
+  --orange:    #fb923c;
+  --amber:     #fbbf24;
+  --green:     #4ade80;
+  --blue:      #60a5fa;
+  --shadow:    0 1px 3px rgba(0,0,0,.6), 0 4px 12px rgba(0,0,0,.5);
+  --shadow-lg: 0 8px 32px rgba(0,0,0,.8);
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+html, body {
+  height: 100%;
+  font-family: var(--font);
+  background: var(--bg);
+  color: var(--text);
+  overflow: hidden;
+}
+
+::-webkit-scrollbar { width: 4px; height: 4px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+
+.leaflet-container {
+  width: 100% !important;
+  height: 100% !important;
+  font-family: var(--font) !important;
+}
+[data-dark] .leaflet-tile {
+  filter: brightness(0.2) saturate(0.2) !important;
+}
+.leaflet-control-zoom { display: none !important; }
+.leaflet-control-attribution {
+  font-size: 9px !important;
+  opacity: .4;
+}
+
+@keyframes blink   { 50% { opacity: .15; } }
+@keyframes wave    { 0%,100% { height: 4px; } 50% { height: 16px; } }
+@keyframes fadeup  { from { opacity:0; transform:translateY(8px); } to { opacity:1; transform:translateY(0); } }
+@keyframes slidein { from { opacity:0; transform:translateX(16px); } to { opacity:1; transform:translateX(0); } }
+
+.blink   { animation: blink 1.2s step-end infinite; }
+.fadeup  { animation: fadeup .25s cubic-bezier(.16,1,.3,1) both; }
+.slidein { animation: slidein .3s cubic-bezier(.16,1,.3,1) both; }
