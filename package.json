@@ -1,5 +1,5 @@
 {
-  "name": "vigil-dispatch",
+  "name": "vigil",
   "version": "0.1.0",
   "private": true,
   "scripts": {
@@ -8,16 +8,28 @@
     "start": "next start"
   },
   "dependencies": {
-    "next": "14.2.0",
+    "leaflet": "^1.9.4",
+    "lucide-react": "^0.378.0",
+    "next": "^14.2.35",
     "react": "^18",
     "react-dom": "^18",
-    "leaflet": "^1.9.4",
-    "react-leaflet": "^4.2.1",
-    "lucide-react": "^0.378.0"
+    "react-leaflet": "^4.2.1"
   },
   "devDependencies": {
-    "tailwindcss": "^3.4.0",
+    "autoprefixer": "^10",
     "postcss": "^8",
-    "autoprefixer": "^10"
-  }
+    "tailwindcss": "^3.4.0"
+  },
+  "description": "A dispatch AI",
+  "main": "next.config.js",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/vigil-live/receptionist.git"
+  },
+  "author": "Salban Nithilaselvan, Aneesh Peri, Ritwik Sinha, Aarya Srikanth",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/vigil-live/receptionist/issues"
+  },
+  "homepage": "https://github.com/vigil-live/receptionist#readme"
 }
