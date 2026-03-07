@@ -4,8 +4,8 @@ import { useState, useEffect } from 'react';
 import dynamic from 'next/dynamic';
 import {
   Eye, Sun, Moon, SlidersHorizontal,
-  ShieldCheck, Flame, Ambulance, Wrench, AlertTriangle,
-  MapPin, Clock, Heart, Phone, User, ChevronDown, Send, Check, X, PhoneForwarded
+  ShieldCheck, Flame, Ambulance,
+  MapPin, Clock, Phone, User, ChevronDown, Send, Check, X, PhoneForwarded, FileText
 } from 'lucide-react';
 import { MOCK_CALLS } from '../data/mockCalls';
 
@@ -23,33 +23,23 @@ const SEV = {
 };
 
 const STAT = {
-  active:     { color: '#16a34a', label: 'Live' },
-  pending:    { color: '#d97706', label: 'Queued' },
-  dispatched: { color: '#2563eb', label: 'Dispatched' },
-  resolved:   { color: '#94a3b8', label: 'Resolved' },
+  active:      { color: '#16a34a', label: 'Live' },
+  pending:     { color: '#d97706', label: 'Pending' },
+  dispatched:  { color: '#2563eb', label: 'Dispatched' },
+  resolved:    { color: '#94a3b8', label: 'Resolved' },
   transferred: { color: '#7c3aed', label: 'Transferred' },
-};
-
-const EMOTIONAL = {
-  calm:        { color: '#16a34a', label: 'Calm' },
-  distressed:  { color: '#d97706', label: 'Distressed' },
-  panic:       { color: '#dc2626', label: 'Panicking' },
-  unresponsive:{ color: '#94a3b8', label: 'Unresponsive' },
 };
 
 const DISPATCH_OPTS = [
   { type: 'police',    label: 'Police',    color: '#2563eb', icon: ShieldCheck },
   { type: 'fire',      label: 'Fire Dept', color: '#ea580c', icon: Flame },
   { type: 'ambulance', label: 'Ambulance', color: '#dc2626', icon: Ambulance },
-  { type: 'hazmat',    label: 'Hazmat',    color: '#d97706', icon: AlertTriangle },
-  { type: 'rescue',    label: 'Rescue',    color: '#16a34a', icon: Wrench },
 ];
 
 function fmt(s) {
   return `${Math.floor(s/60)}:${String(s%60).padStart(2,'0')}`;
 }
 
-// ─── Topbar ───────────────────────────────────────────────────────────────────
 function Topbar({ dark, toggle, time }) {
   return (
     <div style={{
@@ -61,7 +51,6 @@ function Topbar({ dark, toggle, time }) {
       boxShadow: 'var(--shadow)',
       zIndex: 10,
     }}>
-      {/* Brand */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
         <div style={{ width: 30, height: 30, borderRadius: 8, background: 'var(--blue)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
           <Eye size={15} color="#fff" />
@@ -74,12 +63,10 @@ function Topbar({ dark, toggle, time }) {
 
       <div style={{ flex: 1 }} />
 
-      {/* Clock */}
       <span style={{ font: '600 14px var(--font)', color: 'var(--text)', fontVariantNumeric: 'tabular-nums' }}>{time}</span>
 
       <div style={{ width: 1, height: 28, background: 'var(--border)' }} />
 
-      {/* Theme */}
       <button onClick={toggle} style={{
         width: 32, height: 32, borderRadius: 8,
         background: 'var(--surface2)', border: '1px solid var(--border)',
@@ -92,7 +79,6 @@ function Topbar({ dark, toggle, time }) {
   );
 }
 
-// ─── Call card ────────────────────────────────────────────────────────────────
 function CallCard({ call, selected, onSelect }) {
   const sev = SEV[call.severity];
   const stat = STAT[call.status];
@@ -118,10 +104,7 @@ function CallCard({ call, selected, onSelect }) {
           </span>
           <span style={{ font: '400 10px var(--font)', color: 'var(--text3)' }}>#{call.id}</span>
         </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
-          {isLive && <div style={{ width: 6, height: 6, borderRadius: '50%', background: 'var(--green)', animation: 'blink 1.2s step-end infinite' }} />}
-          <span style={{ font: '500 10px var(--font)', color: stat.color }}>{stat.label}</span>
-        </div>
+        <span style={{ font: '500 10px var(--font)', color: stat.color }}>{stat.label}</span>
       </div>
 
       <div style={{ font: '600 12px/1.35 var(--font)', color: 'var(--text)', marginBottom: 5 }}>{call.incident}</div>
@@ -138,25 +121,43 @@ function CallCard({ call, selected, onSelect }) {
           <Clock size={9} color="var(--text3)" />
           <span style={{ font: '400 10px var(--font)', color: 'var(--text3)' }}>{fmt(call.callDuration)}</span>
         </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-          <div style={{ width: 6, height: 6, borderRadius: '50%', background: EMOTIONAL[call.emotionalState].color }} />
-          <span style={{ font: '400 10px var(--font)', color: 'var(--text3)', textTransform: 'capitalize' }}>{call.emotionalState}</span>
-        </div>
       </div>
-
-      {isLive && (
-        <div style={{ marginTop: 7, padding: '5px 8px', background: 'rgba(22,163,74,.07)', border: '1px solid rgba(22,163,74,.18)', borderRadius: 5, font: '500 10px var(--font)', color: 'var(--green)' }}>
-          ◈ {call.aiStep}
-        </div>
-      )}
     </div>
   );
 }
 
-// ─── Detail panel ─────────────────────────────────────────────────────────────
 function Detail({ call, onDispatch, onTransfer, onClose }) {
   const [confirm, setConfirm] = useState(null);
   const [showTx, setShowTx] = useState(false);
+  const [reportLoading, setReportLoading] = useState(false);
+  const [reportError, setReportError] = useState(null);
+
+  const handleGenerateReport = async () => {
+    setReportLoading(true);
+    setReportError(null);
+    try {
+      const res = await fetch('/api/report', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ call_id: call.id }),
+      });
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.error || 'Failed to generate report');
+      }
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `report_${call.id}.pdf`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      setReportError(e.message);
+    } finally {
+      setReportLoading(false);
+    }
+  };
 
   if (!call) return (
     <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 10, padding: 24 }}>
@@ -168,15 +169,11 @@ function Detail({ call, onDispatch, onTransfer, onClose }) {
   );
 
   const sev = SEV[call.severity];
-  const emo = EMOTIONAL[call.emotionalState];
-  const emoLevel = { panic: 5, distressed: 3, unresponsive: 1, calm: 2 }[call.emotionalState] || 2;
 
   return (
     <div className="slidein" style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-      {/* Accent bar */}
       <div style={{ height: 3, background: sev.color, flexShrink: 0 }} />
 
-      {/* Header */}
       <div style={{ padding: '12px 16px', borderBottom: '1px solid var(--border)', flexShrink: 0 }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
           <div>
@@ -192,10 +189,8 @@ function Detail({ call, onDispatch, onTransfer, onClose }) {
         </div>
       </div>
 
-      {/* Scrollable body */}
       <div style={{ flex: 1, overflowY: 'auto', padding: '14px 16px', display: 'flex', flexDirection: 'column', gap: 12 }}>
 
-        {/* Quick info */}
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6 }}>
           {[
             { icon: <Phone size={11} color="var(--text3)" />, label: 'Phone', value: call.phone },
@@ -213,51 +208,19 @@ function Detail({ call, onDispatch, onTransfer, onClose }) {
           ))}
         </div>
 
-        {/* Emotional state */}
-        <div style={{ padding: '10px 12px', background: `${emo.color}0f`, border: `1px solid ${emo.color}28`, borderRadius: 9, display: 'flex', alignItems: 'center', gap: 10 }}>
-          <Heart size={14} color={emo.color} />
-          <div style={{ flex: 1 }}>
-            <div style={{ font: '600 12px var(--font)', color: emo.color }}>{emo.label}</div>
-          </div>
-          <div style={{ display: 'flex', gap: 2, alignItems: 'flex-end' }}>
-            {[1,2,3,4,5].map(i => (
-              <div key={i} style={{ width: 5, borderRadius: 3, height: 8 + i*3, background: i <= emoLevel ? emo.color : 'var(--border)' }} />
-            ))}
-          </div>
-        </div>
-
-        {/* AI summary */}
-        <div style={{ padding: '11px 13px', background: 'rgba(22,163,74,.06)', border: '1px solid rgba(22,163,74,.2)', borderRadius: 9 }}>
-          <div style={{ font: '700 9px var(--font)', color: 'var(--green)', textTransform: 'uppercase', letterSpacing: '.07em', marginBottom: 6 }}>◈ AI Assessment</div>
-          <p style={{ font: '400 12px/1.6 var(--font)', color: 'var(--text2)', marginBottom: 8 }}>{call.aiSummary}</p>
-          <div style={{ borderTop: '1px solid rgba(22,163,74,.15)', paddingTop: 8, font: '500 11px var(--font)', color: 'var(--green)' }}>
-            → {call.aiStep}
-          </div>
-        </div>
-
-
-        {/* Transfer Call */}
         {call.status !== 'resolved' && call.status !== 'transferred' && (
-          <div style={{ padding: '11px 13px', background: 'rgba(124,58,237,.06)', border: '1px solid rgba(124,58,237,.2)', borderRadius: 9 }}>
-            <div style={{ font: '700 9px var(--font)', color: '#7c3aed', textTransform: 'uppercase', letterSpacing: '.07em', marginBottom: 6 }}>
-              Hand Off to Operator
-            </div>
-            <p style={{ font: '400 11px/1.5 var(--font)', color: 'var(--text2)', marginBottom: 10 }}>
-              Transfer this call from AI assistance to a live operator. The operator will take over and continue assisting the caller directly.
-            </p>
-            <button
-              onClick={() => onTransfer(call.id)}
-              style={{
-                width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
-                padding: '9px 14px',
-                background: '#7c3aed', border: 'none', borderRadius: 7,
-                cursor: 'pointer', font: '600 13px var(--font)', color: '#fff',
-              }}
-            >
-              <PhoneForwarded size={14} color="#fff" />
-              Transfer Call to My Device
-            </button>
-          </div>
+          <button
+            onClick={() => onTransfer(call.id)}
+            style={{
+              width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
+              padding: '9px 14px',
+              background: '#7c3aed', border: 'none', borderRadius: 7,
+              cursor: 'pointer', font: '600 13px var(--font)', color: '#fff',
+            }}
+          >
+            <PhoneForwarded size={14} color="#fff" />
+            Transfer
+          </button>
         )}
 
         {call.status === 'transferred' && (
@@ -270,7 +233,6 @@ function Detail({ call, onDispatch, onTransfer, onClose }) {
           </div>
         )}
 
-        {/* Dispatch */}
         <div>
           <div style={{ font: '700 10px var(--font)', color: 'var(--text3)', textTransform: 'uppercase', letterSpacing: '.07em', marginBottom: 8 }}>Dispatch Units</div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
@@ -306,7 +268,30 @@ function Detail({ call, onDispatch, onTransfer, onClose }) {
           </div>
         </div>
 
-        {/* Transcript */}
+        <div>
+          <button
+            onClick={handleGenerateReport}
+            disabled={reportLoading}
+            style={{
+              width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
+              padding: '9px 14px',
+              background: reportLoading ? 'var(--surface2)' : 'var(--surface2)',
+              border: '1px solid var(--border)', borderRadius: 7,
+              cursor: reportLoading ? 'not-allowed' : 'pointer',
+              font: '600 13px var(--font)', color: reportLoading ? 'var(--text3)' : 'var(--text)',
+              transition: 'all .15s',
+            }}
+          >
+            <FileText size={14} color={reportLoading ? 'var(--text3)' : 'var(--text2)'} />
+            {reportLoading ? 'Generating…' : 'Generate Report'}
+          </button>
+          {reportError && (
+            <div style={{ marginTop: 6, font: '400 11px var(--font)', color: '#dc2626', textAlign: 'center' }}>
+              {reportError}
+            </div>
+          )}
+        </div>
+
         <div>
           <button onClick={() => setShowTx(v => !v)} style={{
             width: '100%', display: 'flex', justifyContent: 'space-between', alignItems: 'center',
@@ -320,7 +305,7 @@ function Detail({ call, onDispatch, onTransfer, onClose }) {
           {showTx && call.transcript.map((e, i) => (
             <div key={i} style={{ padding: '8px 11px', background: e.role === 'ai' ? 'rgba(22,163,74,.05)' : 'var(--surface2)', border: `1px solid ${e.role === 'ai' ? 'rgba(22,163,74,.18)' : 'var(--border)'}`, borderRadius: 7, marginBottom: 5 }}>
               <div style={{ font: '600 9px var(--font)', color: e.role === 'ai' ? 'var(--green)' : 'var(--orange)', textTransform: 'uppercase', letterSpacing: '.05em', marginBottom: 3 }}>
-                {e.role === 'ai' ? '◈ Vigil AI' : '↗ Caller'} · {e.time}
+                {e.role === 'ai' ? 'Vigil AI' : 'Caller'} · {e.time}
               </div>
               <p style={{ font: '400 12px/1.55 var(--font)', color: 'var(--text2)' }}>{e.text}</p>
             </div>
@@ -332,7 +317,6 @@ function Detail({ call, onDispatch, onTransfer, onClose }) {
   );
 }
 
-// ─── Main dashboard ────────────────────────────────────────────────────────────
 export default function Dashboard() {
   const [calls, setCalls] = useState(MOCK_CALLS);
   const [selected, setSelected] = useState('C001');
@@ -390,20 +374,15 @@ export default function Dashboard() {
     return 0;
   });
   const selectedCall = calls.find(c => c.id === selected) || null;
-  const active = calls.filter(c => c.status === 'active' || c.status === 'dispatched').length;
-  const critical = calls.filter(c => c.severity === 'critical').length;
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', background: 'var(--bg)' }}>
 
       <Topbar dark={dark} toggle={() => setDark(d => !d)} time={time} />
 
-      {/* 3-column body */}
       <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
 
-        {/* LEFT — incident list */}
         <div style={{ width: 290, flexShrink: 0, background: 'var(--surface)', borderRight: '1px solid var(--border)', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-          {/* List header */}
           <div style={{ padding: '12px 16px', borderBottom: '1px solid var(--border)', flexShrink: 0 }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: filterOpen ? 12 : 0 }}>
               <div>
@@ -431,10 +410,8 @@ export default function Dashboard() {
               </button>
             </div>
 
-            {/* Filter panel */}
             {filterOpen && (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-                {/* Sort by */}
                 <div>
                   <div style={{ font: '600 9px var(--font)', color: 'var(--text3)', textTransform: 'uppercase', letterSpacing: '.07em', marginBottom: 5 }}>Sort by</div>
                   <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
@@ -454,7 +431,6 @@ export default function Dashboard() {
                     ))}
                   </div>
                 </div>
-                {/* Filter by status */}
                 <div>
                   <div style={{ font: '600 9px var(--font)', color: 'var(--text3)', textTransform: 'uppercase', letterSpacing: '.07em', marginBottom: 5 }}>Show</div>
                   <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
@@ -474,7 +450,6 @@ export default function Dashboard() {
                     ))}
                   </div>
                 </div>
-                {/* Reset */}
                 {(sortBy !== 'severity' || filterStatus !== 'all') && (
                   <button onClick={() => { setSortBy('severity'); setFilterStatus('all'); }} style={{
                     padding: '4px 9px', borderRadius: 5, alignSelf: 'flex-start',
@@ -485,7 +460,6 @@ export default function Dashboard() {
               </div>
             )}
           </div>
-          {/* Cards */}
           <div style={{ flex: 1, overflowY: 'auto' }}>
             {sorted.map(c => (
               <CallCard key={c.id} call={c} selected={selected === c.id} onSelect={setSelected} />
@@ -493,14 +467,11 @@ export default function Dashboard() {
           </div>
         </div>
 
-        {/* CENTER — map */}
         <div style={{ flex: 1, position: 'relative', overflow: 'hidden' }}>
           <Map calls={calls} selectedId={selected} onSelect={setSelected} dark={dark} />
         </div>
 
-        {/* RIGHT — detail */}
         <div style={{ width: 320, flexShrink: 0, background: 'var(--surface)', borderLeft: '1px solid var(--border)', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-          {/* Right header */}
           <div style={{ padding: '12px 16px', borderBottom: '1px solid var(--border)', flexShrink: 0 }}>
             <div style={{ font: '700 13px var(--font)', color: 'var(--text)' }}>Incident Detail</div>
             <div style={{ font: '400 10px var(--font)', color: 'var(--text3)', marginTop: 2 }}>Select a call to view</div>
@@ -510,7 +481,6 @@ export default function Dashboard() {
 
       </div>
 
-      {/* Toast */}
       {toast && (
         <div className="fadeup" style={{
           position: 'fixed', bottom: 20, left: '50%', transform: 'translateX(-50%)',
