@@ -1,11 +1,8 @@
-# database.py
 import sqlite3
-from datetime import datetime
 
 DB_PATH = "transcriptions.db"
 
 def init_db():
-    """Create the database and table if they don't exist yet."""
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     cursor.execute("""
@@ -13,35 +10,38 @@ def init_db():
             id          INTEGER PRIMARY KEY AUTOINCREMENT,
             text        TEXT NOT NULL,
             call_sid    TEXT,
+            role        TEXT DEFAULT 'caller',
             created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
+    try:
+        cursor.execute("ALTER TABLE transcriptions ADD COLUMN role TEXT DEFAULT 'caller'")
+    except Exception:
+        pass
     conn.commit()
     conn.close()
-    print("✅ Database ready.")
+    print("Database ready.")
 
-def save_transcription(text: str, call_sid: str = None):
-    """Save a transcript chunk to the database."""
+def save_transcription(text: str, call_sid: str = None, role: str = "caller"):
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     cursor.execute(
-        "INSERT INTO transcriptions (text, call_sid) VALUES (?, ?)",
-        (text, call_sid)
+        "INSERT INTO transcriptions (text, call_sid, role) VALUES (?, ?, ?)",
+        (text, call_sid, role)
     )
     conn.commit()
     conn.close()
 
 def get_transcriptions(limit: int = 50):
-    """Fetch the most recent transcriptions."""
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     cursor.execute(
-        "SELECT id, text, call_sid, created_at FROM transcriptions ORDER BY created_at DESC LIMIT ?",
+        "SELECT id, text, call_sid, role, created_at FROM transcriptions ORDER BY created_at DESC LIMIT ?",
         (limit,)
     )
     rows = cursor.fetchall()
     conn.close()
     return [
-        {"id": r[0], "text": r[1], "call_sid": r[2], "created_at": r[3]}
+        {"id": r[0], "text": r[1], "call_sid": r[2], "role": r[3], "created_at": r[4]}
         for r in rows
     ]
