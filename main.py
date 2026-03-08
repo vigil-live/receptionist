@@ -197,9 +197,10 @@ Always set lat and lng to null."""
                     "Content-Type": "application/json",
                 },
                 json={
-                    "model": "llama-3.1-8b-instant",
+                    "model": "openai/gpt-oss-20b",
                     "messages": [{"role": "user", "content": prompt}],
                     "temperature": 0.1,
+                    "max_completion_tokens": 8192,
                 },
             )
             data = resp.json()
@@ -248,10 +249,10 @@ async def get_ai_response(call_sid: str, caller_message: str) -> str:
                     "Content-Type": "application/json",
                 },
                 json={
-                    "model": "llama-3.3-70b-versatile",
+                    "model": "openai/gpt-oss-20b",
                     "messages": messages,
                     "temperature": 0.4,
-                    "max_tokens": 80,
+                    "max_completion_tokens": 8192,
                 },
             )
             data = resp.json()
@@ -269,7 +270,7 @@ async def get_ai_response(call_sid: str, caller_message: str) -> str:
 
     except Exception as exc:
         print(f"Groq conversation failed for {call_sid}: {exc}")
-        return "I'm here with you — can you tell me your location?"
+        return "Sorry, I'm having trouble understanding. Can you please repeat that?"
 
 
 async def text_to_speech_mulaw(text: str) -> Optional[bytes]:
@@ -383,19 +384,8 @@ async def media_stream_final(websocket: WebSocket):
     ai_speaking = asyncio.Event()
 
     nova_keywords = [
-        "Tysons:2", "Herndon:2", "Reston:2", "Ashburn:2", "Chantilly:2",
-        "Centreville:2", "Annandale:2", "Springfield:2", "Baileys:2",
-        "Fairfax:2", "Manassas:2", "Woodbridge:2", "Lorton:2", "Burke:2",
-        "Vienna:2", "McLean:2", "Arlington:2", "Alexandria:2", "Oakton:2",
-        "Clifton:2", "Occoquan:2", "Dumfries:2", "Quantico:2", "Stafford:2",
-        "Leesburg:2", "Purcellville:2", "Middleburg:2", "Dulles:2",
-        "Cvent:2", "Inova:2", "Galleria:2", "Pentagon:2", "Mosaic:2",
-        "Landmark:2", "Dulles:2", "Reagan:2", "Rosslyn:2", "Ballston:2",
-        "Clarendon:2", "Shirlington:2", "Potomac:2", "Rappahannock:2",
-        "Beltway:2", "Dulles:2", "Loudoun:2", "Braddock:2", "Franconia:2",
-        "Leesburg:2", "Sully:2", "Westfields:2", "Centreville:2",
-        "Pentagon:2", "Quantico:2", "Bolling:2", "Belvoir:2", "Meade:2",
-        "DIA:2", "NSF:2", "DARPA:2", "NRO:2",
+        "Tysons:1", "Herndon:2", "Reston:1", "Ashburn:1", "Chantilly:2",
+        "Fairfax:2", "Cvent:1", "Pleasant:2", "Glen:2", "Court:2"
     ]
     keyword_params = "".join(f"&keywords={kw}" for kw in nova_keywords)
 
