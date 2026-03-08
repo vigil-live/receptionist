@@ -12,8 +12,7 @@ import websockets
 from dotenv import load_dotenv
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, Response
-from fastapi.templating import Jinja2Templates
+from fastapi.responses import Response
 from twilio.rest import Client
 from twilio.twiml.voice_response import Connect, Stream, VoiceResponse
 
@@ -34,56 +33,128 @@ call_counter: int = 0
 
 conversation_histories: Dict[str, List[dict]] = {}
 
-SYSTEM_PROMPT = """You are an emergency 911 AI dispatcher assistant. Human operators are temporarily unavailable, so you are handling the call.
-
-Rules you MUST follow:
-- Every reply is ONE short sentence only — never more.
-- Speak calmly and clearly. Be warm but efficient.
-- Ask only ONE question at a time to gather: location, nature of emergency, caller safety.
-- Acknowledge the caller's emotion briefly before asking for info (e.g. "I understand, stay calm." or "You're doing great, help is coming.").
+SYSTEM_PROMPT = """You are an emergency 911 AI dispatcher. Human operators are temporarily unavailable.
+Rules:
+- Never repeat the same question or acknowledgment twice in the same call. For example, if you ask "What is your location?" once, never ask that exact question again in this call or any other form of that question. Always ask something new to gather critical information.
+- Never send help yourself, but always ask questions to gather critical information for dispatchers.
+- Every reply should only be ONE short sentence, ideally under 30 words, and should ask for the most critical missing information.
+- Be calm, direct, and warm — like a real dispatcher.
+- Ask only ONE question per turn. Work through: location → nature of emergency → caller safety → descriptions.
+- Never repeat a phrase you have already used in this call.
+- Vary your acknowledgments. Do not use the same opener twice.
 - Never say you're an AI unless directly asked.
-- Never provide medical/legal advice beyond basic safety instructions.
-- If situation is life-threatening, reassure them help is dispatched and ask them to stay on the line.
-- Do not repeat yourself."""
+- Never give medical or legal advice beyond basic safety instructions.
+- If life-threatening, confirm help is dispatched and ask them to stay on the line.
+- Mirror the real dispatcher style: gather facts efficiently, confirm what you heard, stay composed.
+Example:
+911 Call Transcript
+DISPATCHER: 911, line is recorded. What is your emergency?1
+MATOON: Um I am running outside of a house and someone is yelling2
+out the window "Please call the police, someone's trying to kill me." I don't know3
+anyone in the house, there's just someone at the window.4
+DISPATCHER: What's the address?5
+MATOON: The address is 98 (unintelligible background yelling)6
+Hancock? Hancock. 98 Hancock Street in Lexington.7
+DISPATCHER: Was it a male or a female yelling out the window?8
+MATOON: It's a male.9
+DISPATCHER: So the male is yelling for help saying someone's trying to10
+kill him?11
+MATOON: Yes.12
+DISPATCHER: Okay did you get a look at the male? Any type of13
+description you can provide me?14
+MATOON: Um, let's see. Can you bring your (unintelligible)? They're15
+asking for a description. Yeah. (Unintelligible background talking). No, no, for16
+you. Chinese, dark hair uh, down to shoulder, 20, 27, in his 20s, 27 years old.17
+DISPATCHER: So it's a Chinese male asking for help in his 20s?18
+MATOON: Yes.19
+DISPATCHER: Okay, and your name and a call back number sir?20
+MATOON: My name is Scott Mattoon, . And just to be21
+clear, I- I'm not a part of this thing, I was just going for a run.22
+DISPATCHER: No I understand.23
+2
+MATOON: And he caught my–1
+DISPATCHER: And um, so the male was what? He was yelling out the2
+window from inside 98 Hancock? Saying someone was actively trying to kill him?3
+MATOON: Yes, from the second floor window.4
+DISPATCHER: Second floor window. Okay. And did he make mention of5
+or did you see anybody with a weapon?6
+MATOON: I haven't seen anyone else.7
+DISPATCHER: Okay, 98 Hancock. We will send someone to see what's8
+going on over there.9
+MATOON: Thank you.10
+DISPATCHER: Alright, bye."""
 
+
+NOVA_BOUNDS = {
+    "lat_min": 38.55,
+    "lat_max": 39.10,
+    "lng_min": -77.90,
+    "lng_max": -76.90,
+}
+
+def _in_nova(lat: float, lng: float) -> bool:
+    return (
+        NOVA_BOUNDS["lat_min"] <= lat <= NOVA_BOUNDS["lat_max"]
+        and NOVA_BOUNDS["lng_min"] <= lng <= NOVA_BOUNDS["lng_max"]
+    )
 
 async def geocode_address(address: str) -> tuple[Optional[float], Optional[float]]:
     if not address or address == "Unspecified Location":
         return None, None
 
+    queries = [
+        f"{address}, Northern Virginia",
+        f"{address}, Fairfax County, VA",
+        f"{address}, Virginia",
+    ]
+
     async with httpx.AsyncClient(timeout=8.0) as client:
-        try:
-            resp = await client.get(
-                "https://nominatim.openstreetmap.org/search",
-                params={"q": address, "format": "json", "limit": 1, "addressdetails": 1},
-                headers={"User-Agent": "Vigil-Dispatch/1.0"},
-            )
-            results = resp.json()
-            if results:
-                lat = float(results[0]["lat"])
-                lng = float(results[0]["lon"])
-                print(f"[Nominatim] '{address}' -> ({lat}, {lng})")
-                return lat, lng
-        except Exception as exc:
-            print(f"Nominatim failed for '{address}': {exc}")
+        for query in queries:
+            try:
+                resp = await client.get(
+                    "https://nominatim.openstreetmap.org/search",
+                    params={
+                        "q": query,
+                        "format": "json",
+                        "limit": 5,
+                        "addressdetails": 1,
+                        "countrycodes": "us",
+                        "viewbox": f"{NOVA_BOUNDS['lng_min']},{NOVA_BOUNDS['lat_max']},{NOVA_BOUNDS['lng_max']},{NOVA_BOUNDS['lat_min']}",
+                        "bounded": 1,
+                    },
+                    headers={"User-Agent": "Vigil-Dispatch/1.0"},
+                )
+                for result in resp.json():
+                    lat = float(result["lat"])
+                    lng = float(result["lon"])
+                    if _in_nova(lat, lng):
+                        print(f"[Nominatim] '{query}' -> ({lat}, {lng})")
+                        return lat, lng
+            except Exception as exc:
+                print(f"Nominatim failed for '{query}': {exc}")
 
         try:
             resp = await client.get(
                 "https://photon.komoot.io/api/",
-                params={"q": address, "limit": 1},
+                params={
+                    "q": f"{address} Virginia",
+                    "limit": 5,
+                    "lat": 38.85,
+                    "lon": -77.35,
+                },
                 headers={"User-Agent": "Vigil-Dispatch/1.0"},
             )
-            features = resp.json().get("features", [])
-            if features:
-                coords = features[0]["geometry"]["coordinates"]
+            for feature in resp.json().get("features", []):
+                coords = feature["geometry"]["coordinates"]
                 lng, lat = float(coords[0]), float(coords[1])
-                print(f"[Photon] '{address}' -> ({lat}, {lng})")
-                return lat, lng
+                if _in_nova(lat, lng):
+                    print(f"[Photon] '{address}' -> ({lat}, {lng})")
+                    return lat, lng
         except Exception as exc:
-            print(f"Photon also failed for '{address}': {exc}")
+            print(f"Photon failed for '{address}': {exc}")
 
+    print(f"[Geocode] No NoVA result for '{address}' — discarding")
     return None, None
-
 
 async def analyze_with_groq(call_sid: str) -> None:
     call = calls_store.get(call_sid)
@@ -104,7 +175,7 @@ Return ONLY valid JSON (no markdown fences, no extra text) with this exact struc
   "severity": "critical|high|medium|low",
   "name": "caller full name or null if unknown",
   "location": {{
-    "address": "full address or landmark name if stated in transcript, or Unspecified Location if not mentioned",
+    "address": "The address or landmark as stated in the transcript. This call is from the Northern Virginia region (Fairfax County, Arlington, Loudoun, Prince William, Alexandria). If the caller states a location that does not appear to be in Northern Virginia, assume the transcription was imperfect and resolve it to the closest matching location name in Northern Virginia. Never return a location outside of Northern Virginia. If no location is mentioned, return Unspecified Location.",
     "lat": null,
     "lng": null
   }},
@@ -250,18 +321,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-templates = Jinja2Templates(directory="templates")
-
-
-@app.get("/", response_class=HTMLResponse)
-async def index(request: Request):
-    transcriptions = get_transcriptions()
-    return templates.TemplateResponse(
-        "index.html",
-        {"request": request, "transcriptions": transcriptions},
-    )
-
-
 @app.post("/incoming-call")
 async def incoming_call(request: Request):
     form_data = await request.form()
@@ -311,6 +370,23 @@ async def media_stream_final(websocket: WebSocket):
     tts_queue: asyncio.Queue = asyncio.Queue()
     ai_speaking = asyncio.Event()
 
+    nova_keywords = [
+        "Tysons:2", "Herndon:2", "Reston:2", "Ashburn:2", "Chantilly:2",
+        "Centreville:2", "Annandale:2", "Springfield:2", "Baileys:2",
+        "Fairfax:2", "Manassas:2", "Woodbridge:2", "Lorton:2", "Burke:2",
+        "Vienna:2", "McLean:2", "Arlington:2", "Alexandria:2", "Oakton:2",
+        "Clifton:2", "Occoquan:2", "Dumfries:2", "Quantico:2", "Stafford:2",
+        "Leesburg:2", "Purcellville:2", "Middleburg:2", "Dulles:2",
+        "Cvent:2", "Inova:2", "Galleria:2", "Pentagon:2", "Mosaic:2",
+        "Landmark:2", "Dulles:2", "Reagan:2", "Rosslyn:2", "Ballston:2",
+        "Clarendon:2", "Shirlington:2", "Potomac:2", "Rappahannock:2",
+        "Beltway:2", "Dulles:2", "Loudoun:2", "Braddock:2", "Franconia:2",
+        "Leesburg:2", "Sully:2", "Westfields:2", "Centreville:2",
+        "Pentagon:2", "Quantico:2", "Bolling:2", "Belvoir:2", "Meade:2",
+        "DIA:2", "NSF:2", "DARPA:2", "NRO:2",
+    ]
+    keyword_params = "".join(f"&keywords={kw}" for kw in nova_keywords)
+
     deepgram_url = (
         "wss://api.deepgram.com/v1/listen"
         "?encoding=mulaw"
@@ -321,6 +397,7 @@ async def media_stream_final(websocket: WebSocket):
         "&interim_results=true"
         "&utterance_end_ms=1000"
         "&vad_events=true"
+        + keyword_params
     )
 
     try:
