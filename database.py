@@ -45,3 +45,17 @@ def get_transcriptions(limit: int = 50):
         {"id": r[0], "text": r[1], "call_sid": r[2], "role": r[3], "created_at": r[4]}
         for r in rows
     ]
+
+def get_transcriptions_by_call(call_sid: str):
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT id, text, call_sid, role, created_at FROM transcriptions WHERE call_sid = ? ORDER BY created_at ASC",
+        (call_sid,)
+    )
+    rows = cursor.fetchall()
+    conn.close()
+    return [
+        {"id": r[0], "text": r[1], "call_sid": r[2], "role": r[3], "created_at": r[4]}
+        for r in rows
+    ]

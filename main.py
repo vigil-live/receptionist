@@ -17,7 +17,7 @@ from fastapi.templating import Jinja2Templates
 from twilio.rest import Client
 from twilio.twiml.voice_response import Connect, Stream, VoiceResponse
 
-from database import init_db, get_transcriptions, save_transcription
+from database import init_db, get_transcriptions, get_transcriptions_by_call, save_transcription
 
 load_dotenv()
 
@@ -437,7 +437,7 @@ async def media_stream_final(websocket: WebSocket):
 
             async def _greet():
                 await asyncio.sleep(1.0)
-                greeting = "911, what's your emergency?"
+                greeting = "nine-one-one, what's your emergency?"
                 await _speak(greeting)
                 save_transcription(greeting, call_sid=call_sid, role="assistant")
 
@@ -523,12 +523,10 @@ async def get_calls():
     for call_sid, call in calls_store.items():
         groq = call.get("groq_data") or {}
 
+        db_rows = get_transcriptions_by_call(call_sid)
         transcript_entries = [
-            {"role": r["role"] if isinstance(r, dict) else "caller",
-             "text": r["text"] if isinstance(r, dict) else r,
-             "time": ""}
-            for r in (call.get("transcript_log") or
-                      [{"role": "caller", "text": t} for t in call["transcripts"]])
+            {"role": r["role"], "text": r["text"], "time": r["created_at"]}
+            for r in db_rows
         ]
 
         try:

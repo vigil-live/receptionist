@@ -306,7 +306,7 @@ function Detail({ call, onDispatch, onTransfer, onClose }) {
             <ChevronDown size={13} style={{ transform: showTx ? 'rotate(180deg)' : 'none', transition: 'transform .2s' }} />
           </button>
           {showTx && (call.transcript?.length > 0 ? call.transcript.map((e, i) => {
-            const isAI = e.role === 'ai';
+            const isAI = e.role === 'assistant';
             return (
               <div key={i} style={{
                 padding: '8px 11px',
