@@ -2,9 +2,10 @@ import asyncio
 import base64
 import json
 import os
+import audioop
 from contextlib import asynccontextmanager
 from datetime import datetime
-from typing import Dict, Optional
+from typing import Dict, Optional, List
 
 import httpx
 import websockets
@@ -30,6 +31,20 @@ twilio_client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
 
 calls_store: Dict[str, dict] = {}
 call_counter: int = 0
+
+conversation_histories: Dict[str, List[dict]] = {}
+
+SYSTEM_PROMPT = """You are an emergency 911 AI dispatcher assistant. Human operators are temporarily unavailable, so you are handling the call.
+
+Rules you MUST follow:
+- Every reply is ONE short sentence only — never more.
+- Speak calmly and clearly. Be warm but efficient.
+- Ask only ONE question at a time to gather: location, nature of emergency, caller safety.
+- Acknowledge the caller's emotion briefly before asking for info (e.g. "I understand, stay calm." or "You're doing great, help is coming.").
+- Never say you're an AI unless directly asked.
+- Never provide medical/legal advice beyond basic safety instructions.
+- If situation is life-threatening, reassure them help is dispatched and ask them to stay on the line.
+- Do not repeat yourself."""
 
 
 async def geocode_address(address: str) -> tuple[Optional[float], Optional[float]]:
@@ -136,8 +151,6 @@ Always set lat and lng to null."""
                 prev = (calls_store[call_sid].get("groq_data") or {}).get("location", {})
                 parsed["location"]["lat"] = prev.get("lat")
                 parsed["location"]["lng"] = prev.get("lng")
-                if prev.get("lat") is not None:
-                    print(f"Geocoding failed for '{address}', keeping previous coordinates.")
 
             calls_store[call_sid]["groq_data"] = parsed
             print(
@@ -147,6 +160,78 @@ Always set lat and lng to null."""
 
     except Exception as exc:
         print(f"Groq analysis failed for {call_sid}: {exc}")
+
+
+async def get_ai_response(call_sid: str, caller_message: str) -> str:
+    history = conversation_histories.setdefault(call_sid, [])
+    history.append({"role": "user", "content": caller_message})
+    messages = [{"role": "system", "content": SYSTEM_PROMPT}] + history[-12:]
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post(
+                "https://api.groq.com/openai/v1/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {GROQ_API_KEY}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": "llama-3.3-70b-versatile",
+                    "messages": messages,
+                    "temperature": 0.4,
+                    "max_tokens": 80,
+                },
+            )
+            data = resp.json()
+            ai_text = data["choices"][0]["message"]["content"].strip()
+
+            for punct in [". ", "! ", "? "]:
+                idx = ai_text.find(punct)
+                if idx != -1:
+                    ai_text = ai_text[: idx + 1]
+                    break
+
+            history.append({"role": "assistant", "content": ai_text})
+            print(f"[AI -> {call_sid}] {ai_text}")
+            return ai_text
+
+    except Exception as exc:
+        print(f"Groq conversation failed for {call_sid}: {exc}")
+        return "I'm here with you — can you tell me your location?"
+
+
+async def text_to_speech_mulaw(text: str) -> Optional[bytes]:
+    url = "https://api.deepgram.com/v1/speak"
+    params = {
+        "model": "aura-asteria-en",
+        "encoding": "linear16",
+        "sample_rate": "8000",
+        "container": "none",
+    }
+    headers = {
+        "Authorization": f"Token {DEEPGRAM_API_KEY}",
+        "Content-Type": "application/json",
+    }
+    payload = {"text": text}
+
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.post(url, params=params, headers=headers, json=payload)
+            if resp.status_code != 200:
+                print(f"[TTS] Deepgram error {resp.status_code}: {resp.text[:200]}")
+                return None
+
+            pcm_bytes = resp.content
+            mulaw_bytes = audioop.lin2ulaw(pcm_bytes, 2)
+            return mulaw_bytes
+
+    except Exception as exc:
+        print(f"[TTS] Error: {exc}")
+        return None
+
+
+def chunk_mulaw(mulaw_bytes: bytes, chunk_size: int = 160) -> List[bytes]:
+    return [mulaw_bytes[i: i + chunk_size] for i in range(0, len(mulaw_bytes), chunk_size)]
 
 
 @asynccontextmanager
@@ -199,6 +284,8 @@ async def incoming_call(request: Request):
         "dispatched": [],
     }
 
+    conversation_histories[call_sid] = []
+
     host = request.headers.get("host")
     response = VoiceResponse()
     connect = Connect()
@@ -211,12 +298,18 @@ async def incoming_call(request: Request):
     return Response(content=str(response), media_type="application/xml")
 
 
+app.routes[:] = [r for r in app.routes if getattr(r, "path", None) != "/media-stream"]
+
+
 @app.websocket("/media-stream")
-async def media_stream(websocket: WebSocket):
+async def media_stream_final(websocket: WebSocket):
     await websocket.accept()
-    print("Twilio audio stream connected")
+    print("[WS] Twilio media stream connected")
 
     call_sid: Optional[str] = None
+    stream_sid: Optional[str] = None
+    tts_queue: asyncio.Queue = asyncio.Queue()
+    ai_speaking = asyncio.Event()
 
     deepgram_url = (
         "wss://api.deepgram.com/v1/listen"
@@ -225,7 +318,9 @@ async def media_stream(websocket: WebSocket):
         "&channels=1"
         "&model=nova-2"
         "&smart_format=true"
-        "&interim_results=false"
+        "&interim_results=true"
+        "&utterance_end_ms=1000"
+        "&vad_events=true"
     )
 
     try:
@@ -233,87 +328,158 @@ async def media_stream(websocket: WebSocket):
             deepgram_url,
             additional_headers={"Authorization": f"Token {DEEPGRAM_API_KEY}"},
         ) as deepgram_ws:
-            print("Connected to Deepgram")
+            print("[WS] Connected to Deepgram STT")
 
-            async def forward_audio_to_deepgram():
-                nonlocal call_sid
+            async def task_twilio_inbound():
+                nonlocal call_sid, stream_sid
                 try:
-                    async for raw_message in websocket.iter_text():
-                        msg = json.loads(raw_message)
+                    async for raw in websocket.iter_text():
+                        msg = json.loads(raw)
                         event = msg.get("event")
 
-                        if event == "connected":
-                            print("Twilio stream connected")
-
-                        elif event == "start":
+                        if event == "start":
                             start_data = msg.get("start", {})
-                            custom_params = start_data.get("customParameters", {})
-                            call_sid = custom_params.get("callSid") or start_data.get("callSid")
-                            print(f"Stream started callSid={call_sid}")
+                            cp = start_data.get("customParameters", {})
+                            call_sid = cp.get("callSid") or start_data.get("callSid")
+                            stream_sid = start_data.get("streamSid")
+                            if call_sid and call_sid in calls_store:
+                                calls_store[call_sid]["tts_queue"] = tts_queue
+                            print(f"[WS] Stream start: call={call_sid} stream={stream_sid}")
+                            asyncio.create_task(_greet())
 
                         elif event == "media":
-                            audio_bytes = base64.b64decode(msg["media"]["payload"])
-                            await deepgram_ws.send(audio_bytes)
+                            if not ai_speaking.is_set():
+                                audio = base64.b64decode(msg["media"]["payload"])
+                                await deepgram_ws.send(audio)
 
                         elif event == "stop":
-                            print(f"Stream stopped callSid={call_sid}")
+                            print(f"[WS] Stream stop: call={call_sid}")
                             if call_sid and call_sid in calls_store:
                                 calls_store[call_sid]["status"] = "resolved"
                                 calls_store[call_sid]["ended_at"] = datetime.utcnow().isoformat()
                             await deepgram_ws.send(json.dumps({"type": "CloseStream"}))
+                            await tts_queue.put(None)
                             break
 
                 except WebSocketDisconnect:
-                    print("Twilio WebSocket disconnected")
+                    print("[WS] Twilio disconnected")
                 except Exception as exc:
-                    print(f"Error in forward_audio_to_deepgram: {exc}")
+                    print(f"[WS] task_twilio_inbound error: {exc}")
 
-            async def receive_transcripts_from_deepgram():
-                pending_groq_task: Optional[asyncio.Task] = None
+            async def task_tts_sender():
+                frame_interval = 0.018
                 try:
-                    async for raw_message in deepgram_ws:
-                        result = json.loads(raw_message)
+                    while True:
+                        item = await tts_queue.get()
+                        if item is None:
+                            ai_speaking.clear()
+                            print("[TTS] AI finished speaking")
+                            continue
+                        msg = json.dumps({
+                            "event": "media",
+                            "streamSid": stream_sid,
+                            "media": {"payload": item},
+                        })
+                        await websocket.send_text(msg)
+                        await asyncio.sleep(frame_interval)
+                except Exception as exc:
+                    print(f"[TTS sender] Error: {exc}")
 
-                        if result.get("type") != "Results":
+            async def task_deepgram_inbound():
+                pending_analysis: Optional[asyncio.Task] = None
+                current_utterance: List[str] = []
+
+                try:
+                    async for raw in deepgram_ws:
+                        result = json.loads(raw)
+                        msg_type = result.get("type")
+
+                        if msg_type == "SpeechStarted":
+                            print(f"[STT] Speech started (call={call_sid})")
                             continue
 
-                        alternatives = result.get("channel", {}).get("alternatives", [])
-                        if not alternatives:
+                        if msg_type == "UtteranceEnd":
+                            if current_utterance and not ai_speaking.is_set():
+                                full_text = " ".join(current_utterance).strip()
+                                current_utterance.clear()
+                                if full_text:
+                                    asyncio.create_task(
+                                        _handle_turn(full_text, pending_analysis)
+                                    )
                             continue
 
-                        transcript = alternatives[0].get("transcript", "").strip()
+                        if msg_type != "Results":
+                            continue
+
+                        alts = result.get("channel", {}).get("alternatives", [])
+                        if not alts:
+                            continue
+
+                        transcript = alts[0].get("transcript", "").strip()
                         is_final = result.get("is_final", False)
 
-                        if transcript and is_final:
-                            print(f"[{call_sid}] {transcript}")
-                            save_transcription(transcript, call_sid=call_sid)
+                        if not transcript:
+                            continue
 
+                        if is_final:
+                            current_utterance.append(transcript)
+                            save_transcription(transcript, call_sid=call_sid, role="caller")
                             if call_sid and call_sid in calls_store:
                                 calls_store[call_sid]["transcripts"].append(transcript)
-
-                                if pending_groq_task and not pending_groq_task.done():
-                                    pending_groq_task.cancel()
-                                pending_groq_task = asyncio.create_task(
+                                if pending_analysis and not pending_analysis.done():
+                                    pending_analysis.cancel()
+                                pending_analysis = asyncio.create_task(
                                     analyze_with_groq(call_sid)
                                 )
 
                 except Exception as exc:
-                    print(f"Error in receive_transcripts_from_deepgram: {exc}")
+                    print(f"[STT] task_deepgram_inbound error: {exc}")
 
-            task_a = asyncio.create_task(forward_audio_to_deepgram())
-            task_b = asyncio.create_task(receive_transcripts_from_deepgram())
+            async def _greet():
+                await asyncio.sleep(1.0)
+                greeting = "911, what's your emergency?"
+                await _speak(greeting)
+                save_transcription(greeting, call_sid=call_sid, role="assistant")
+
+            async def _handle_turn(caller_text: str, pending_analysis):
+                print(f"[Turn] caller said: {caller_text}")
+                ai_text = await get_ai_response(call_sid, caller_text)
+                await _speak(ai_text)
+                save_transcription(ai_text, call_sid=call_sid, role="assistant")
+
+            async def _speak(text: str):
+                nonlocal stream_sid
+                if not stream_sid:
+                    return
+
+                mulaw = await text_to_speech_mulaw(text)
+                if not mulaw:
+                    return
+
+                ai_speaking.set()
+
+                frames = chunk_mulaw(mulaw, chunk_size=160)
+                for frame in frames:
+                    b64 = base64.b64encode(frame).decode()
+                    await tts_queue.put(b64)
+
+                await tts_queue.put(None)
+
+            t1 = asyncio.create_task(task_twilio_inbound())
+            t2 = asyncio.create_task(task_tts_sender())
+            t3 = asyncio.create_task(task_deepgram_inbound())
 
             done, pending = await asyncio.wait(
-                [task_a, task_b],
+                [t1, t2, t3],
                 return_when=asyncio.FIRST_COMPLETED,
             )
-            for task in pending:
-                task.cancel()
+            for t in pending:
+                t.cancel()
 
     except Exception as exc:
-        print(f"WebSocket Deepgram error: {exc}")
+        print(f"[WS] Fatal error: {exc}")
 
-    print(f"Media stream closed callSid={call_sid}")
+    print(f"[WS] Session ended (call={call_sid})")
 
 
 @app.post("/transfer-call")
@@ -323,8 +489,6 @@ async def transfer_call(request: Request):
 
     if not call_sid or call_sid not in calls_store:
         return {"error": "Call not found."}
-
-    print(f"Transferring {call_sid} to {FRIEND_PHONE_NUMBER}")
 
     response = VoiceResponse()
     response.dial(FRIEND_PHONE_NUMBER)
@@ -350,7 +514,6 @@ async def dispatch_unit(request: Request):
         dispatched.append(unit_type)
     calls_store[call_sid]["status"] = "dispatched"
 
-    print(f"Dispatched {unit_type} to {call_sid}")
     return {"status": "dispatched", "type": unit_type, "call_sid": call_sid}
 
 
@@ -361,8 +524,11 @@ async def get_calls():
         groq = call.get("groq_data") or {}
 
         transcript_entries = [
-            {"role": "caller", "text": chunk, "time": ""}
-            for chunk in call["transcripts"]
+            {"role": r["role"] if isinstance(r, dict) else "caller",
+             "text": r["text"] if isinstance(r, dict) else r,
+             "time": ""}
+            for r in (call.get("transcript_log") or
+                      [{"role": "caller", "text": t} for t in call["transcripts"]])
         ]
 
         try:
