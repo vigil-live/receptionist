@@ -12,7 +12,8 @@ import websockets
 from dotenv import load_dotenv
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import Response
+from fastapi.responses import HTMLResponse, Response
+from fastapi.templating import Jinja2Templates
 from twilio.rest import Client
 from twilio.twiml.voice_response import Connect, Stream, VoiceResponse
 
@@ -320,6 +321,17 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+templates = Jinja2Templates(directory="templates")
+
+
+@app.get("/", response_class=HTMLResponse)
+async def index(request: Request):
+    transcriptions = get_transcriptions()
+    return templates.TemplateResponse(
+        "index.html",
+        {"request": request, "transcriptions": transcriptions},
+    )
 
 @app.post("/incoming-call")
 async def incoming_call(request: Request):
