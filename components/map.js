@@ -10,7 +10,9 @@ const SEV_COLORS = {
 
 function markerKey(calls) {
   return calls
-    .map(c => `${c.id}:${c.location?.lat}:${c.location?.lng}:${c.severity}:${c.status}:${c.call_number}`)
+    .map(c =>
+      `${c.id}:${c.location?.lat}:${c.location?.lng}:${c.location?.address}:${c.severity}:${c.status}:${c.call_number}`
+    )
     .join('|');
 }
 
@@ -20,11 +22,7 @@ export default function Map({ calls, selectedId, onSelect, dark }) {
   const markersRef = useRef([]);
   const LRef = useRef(null);
   const prevMarkerKey = useRef('');
-  const callsRef = useRef(calls);
-  const flownToId = useRef(null);
   const [mapReady, setMapReady] = useState(false);
-
-  useEffect(() => { callsRef.current = calls; }, [calls]);
 
   useEffect(() => {
     let cancelled = false;
@@ -40,7 +38,10 @@ export default function Map({ calls, selectedId, onSelect, dark }) {
       if (!el) return;
 
       if (el._leaflet_id) el._leaflet_id = null;
-      if (mapRef.current) { mapRef.current.remove(); mapRef.current = null; }
+      if (mapRef.current) {
+        mapRef.current.remove();
+        mapRef.current = null;
+      }
 
       const map = L.map(el, {
         center: [34.052235, -118.243683],
@@ -61,20 +62,27 @@ export default function Map({ calls, selectedId, onSelect, dark }) {
         st.id = 'vigil-pulse-css';
         st.textContent = `
           @keyframes vg-pulse {
-            0% { transform: scale(.85); opacity: .55; }
+            0%   { transform: scale(.85); opacity: .55; }
             100% { transform: scale(2.6); opacity: 0; }
           }`;
         document.head.appendChild(st);
       }
 
-      setTimeout(() => { if (mapRef.current) mapRef.current.invalidateSize(); }, 100);
+      setTimeout(() => {
+        if (mapRef.current) mapRef.current.invalidateSize();
+      }, 100);
+
       if (!cancelled) setMapReady(true);
     };
 
     boot();
+
     return () => {
       cancelled = true;
-      if (mapRef.current) { mapRef.current.remove(); mapRef.current = null; }
+      if (mapRef.current) {
+        mapRef.current.remove();
+        mapRef.current = null;
+      }
     };
   }, []);
 
@@ -117,7 +125,13 @@ export default function Map({ calls, selectedId, onSelect, dark }) {
           ">${num}</div>
         </div>`;
 
-      const icon = L.divIcon({ html, className: '', iconSize: [40, 40], iconAnchor: [20, 20] });
+      const icon = L.divIcon({
+        html,
+        className: '',
+        iconSize: [40, 40],
+        iconAnchor: [20, 20]
+      });
+
       const marker = L.marker([c.location.lat, c.location.lng], { icon })
         .addTo(map)
         .on('click', () => onSelect(c.id));
@@ -129,11 +143,18 @@ export default function Map({ calls, selectedId, onSelect, dark }) {
   useEffect(() => {
     const map = mapRef.current;
     if (!map || !selectedId) return;
-    if (flownToId.current === selectedId) return;
-    const c = callsRef.current.find(x => x.id === selectedId);
+
+    const c = calls.find(x => x.id === selectedId);
+
     if (c?.location?.lat != null && c?.location?.lng != null) {
-      map.panTo([c.location.lat, c.location.lng]);
-      flownToId.current = selectedId;
+      map.flyTo([c.location.lat, c.location.lng], 14, { duration: 0.9 });
     }
-  }, [selectedId, mapReady]);
+  }, [selectedId, calls, mapReady]);
+
+  return (
+    <div
+      ref={containerRef}
+      style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 }}
+    />
+  );
 }

@@ -20,11 +20,11 @@ from database import init_db, get_transcriptions, save_transcription
 
 load_dotenv()
 
-TWILIO_ACCOUNT_SID  = os.getenv("TWILIO_ACCOUNT_SID")
-TWILIO_AUTH_TOKEN   = os.getenv("TWILIO_AUTH_TOKEN")
+TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID")
+TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN")
 FRIEND_PHONE_NUMBER = os.getenv("FRIEND_PHONE_NUMBER")
-DEEPGRAM_API_KEY    = os.getenv("DEEPGRAM_API_KEY")
-GROQ_API_KEY        = os.getenv("GROQ_API_KEY")
+DEEPGRAM_API_KEY = os.getenv("DEEPGRAM_API_KEY")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
 twilio_client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
 
@@ -32,53 +32,41 @@ calls_store: Dict[str, dict] = {}
 call_counter: int = 0
 
 
-async def _nominatim(address: str, client: httpx.AsyncClient) -> tuple[Optional[float], Optional[float]]:
-    try:
-        resp = await client.get(
-            "https://nominatim.openstreetmap.org/search",
-            params={"q": address, "format": "json", "limit": 1},
-            headers={"User-Agent": "Vigil-Dispatch/1.0"},
-        )
-        results = resp.json()
-        if results:
-            return float(results[0]["lat"]), float(results[0]["lon"])
-    except Exception as exc:
-        print(f"Nominatim error: {exc}")
-    return None, None
-
-
-async def _photon(address: str, client: httpx.AsyncClient) -> tuple[Optional[float], Optional[float]]:
-    try:
-        resp = await client.get(
-            "https://photon.komoot.io/api/",
-            params={"q": address, "limit": 1},
-            headers={"User-Agent": "Vigil-Dispatch/1.0"},
-        )
-        features = resp.json().get("features", [])
-        if features:
-            coords = features[0]["geometry"]["coordinates"]
-            return float(coords[1]), float(coords[0])
-    except Exception as exc:
-        print(f"Photon error: {exc}")
-    return None, None
-
-
 async def geocode_address(address: str) -> tuple[Optional[float], Optional[float]]:
     if not address or address == "Unspecified Location":
         return None, None
 
     async with httpx.AsyncClient(timeout=8.0) as client:
-        lat, lng = await _nominatim(address, client)
-        if lat is not None:
-            print(f"Nominatim -> '{address}' -> ({lat}, {lng})")
-            return lat, lng
+        try:
+            resp = await client.get(
+                "https://nominatim.openstreetmap.org/search",
+                params={"q": address, "format": "json", "limit": 1, "addressdetails": 1},
+                headers={"User-Agent": "Vigil-Dispatch/1.0"},
+            )
+            results = resp.json()
+            if results:
+                lat = float(results[0]["lat"])
+                lng = float(results[0]["lon"])
+                print(f"[Nominatim] '{address}' -> ({lat}, {lng})")
+                return lat, lng
+        except Exception as exc:
+            print(f"Nominatim failed for '{address}': {exc}")
 
-        lat, lng = await _photon(address, client)
-        if lat is not None:
-            print(f"Photon -> '{address}' -> ({lat}, {lng})")
-            return lat, lng
+        try:
+            resp = await client.get(
+                "https://photon.komoot.io/api/",
+                params={"q": address, "limit": 1},
+                headers={"User-Agent": "Vigil-Dispatch/1.0"},
+            )
+            features = resp.json().get("features", [])
+            if features:
+                coords = features[0]["geometry"]["coordinates"]
+                lng, lat = float(coords[0]), float(coords[1])
+                print(f"[Photon] '{address}' -> ({lat}, {lng})")
+                return lat, lng
+        except Exception as exc:
+            print(f"Photon also failed for '{address}': {exc}")
 
-    print(f"Both geocoders failed for '{address}'")
     return None, None
 
 
@@ -101,7 +89,7 @@ Return ONLY valid JSON (no markdown fences, no extra text) with this exact struc
   "severity": "critical|high|medium|low",
   "name": "caller full name or null if unknown",
   "location": {{
-    "address": "the most specific location mentioned — full street address, business name + city, or landmark + city. Use 'Unspecified Location' only if truly no location is mentioned.",
+    "address": "full address or landmark name if stated in transcript, or Unspecified Location if not mentioned",
     "lat": null,
     "lng": null
   }},
@@ -111,7 +99,7 @@ Return ONLY valid JSON (no markdown fences, no extra text) with this exact struc
 
 Severity: critical = life-threatening / in-progress violence, high = urgent injury risk,
 medium = property damage / non-critical injury, low = minor / informational.
-Always set lat and lng to null — they will be filled in separately."""
+Always set lat and lng to null."""
 
     try:
         async with httpx.AsyncClient(timeout=15.0) as client:
@@ -138,34 +126,24 @@ Always set lat and lng to null — they will be filled in separately."""
 
             parsed = json.loads(raw)
 
-            old_groq = call.get("groq_data") or {}
-            old_loc  = old_groq.get("location") or {}
-            old_addr = old_loc.get("address", "")
-            old_lat  = old_loc.get("lat")
-            old_lng  = old_loc.get("lng")
+            address = parsed.get("location", {}).get("address", "")
+            lat, lng = await geocode_address(address)
 
-            new_address = parsed.get("location", {}).get("address", "")
-
-            if new_address == old_addr and old_lat is not None:
-                print(f"Address unchanged ('{new_address}') — keeping existing pin")
-                parsed["location"]["lat"] = old_lat
-                parsed["location"]["lng"] = old_lng
+            if lat is not None and lng is not None:
+                parsed["location"]["lat"] = lat
+                parsed["location"]["lng"] = lng
             else:
-                lat, lng = await geocode_address(new_address)
-
-                if lat is not None:
-                    parsed["location"]["lat"] = lat
-                    parsed["location"]["lng"] = lng
-                elif old_lat is not None:
-                    print(f"'{new_address}' failed geocoding — keeping previous pin @ '{old_addr}'")
-                    parsed["location"]["lat"] = old_lat
-                    parsed["location"]["lng"] = old_lng
-                else:
-                    parsed["location"]["lat"] = None
-                    parsed["location"]["lng"] = None
+                prev = (calls_store[call_sid].get("groq_data") or {}).get("location", {})
+                parsed["location"]["lat"] = prev.get("lat")
+                parsed["location"]["lng"] = prev.get("lng")
+                if prev.get("lat") is not None:
+                    print(f"Geocoding failed for '{address}', keeping previous coordinates.")
 
             calls_store[call_sid]["groq_data"] = parsed
-            print(f"Groq -> {call_sid}: {parsed.get('incident')} [{parsed.get('severity')}] @ {parsed.get('location')}")
+            print(
+                f"Groq -> {call_sid}: {parsed.get('incident')} "
+                f"[{parsed.get('severity')}] @ {parsed.get('location')}"
+            )
 
     except Exception as exc:
         print(f"Groq analysis failed for {call_sid}: {exc}")
@@ -201,35 +179,35 @@ async def index(request: Request):
 
 @app.post("/incoming-call")
 async def incoming_call(request: Request):
-    form_data   = await request.form()
-    call_sid    = form_data.get("CallSid")
+    form_data = await request.form()
+    call_sid = form_data.get("CallSid")
     from_number = form_data.get("From", "Unknown")
 
     global call_counter
     call_counter += 1
 
-    print(f"Incoming call! CallSid={call_sid}  From={from_number}")
+    print(f"Incoming call! CallSid={call_sid} From={from_number}")
 
     calls_store[call_sid] = {
-        "call_sid":    call_sid,
+        "call_sid": call_sid,
         "call_number": call_counter,
         "from_number": from_number,
-        "status":      "active",
-        "started_at":  datetime.utcnow().isoformat(),
+        "status": "active",
+        "started_at": datetime.utcnow().isoformat(),
         "transcripts": [],
-        "groq_data":   None,
-        "dispatched":  [],
+        "groq_data": None,
+        "dispatched": [],
     }
 
     host = request.headers.get("host")
     response = VoiceResponse()
-    connect  = Connect()
-    stream   = Stream(url=f"wss://{host}/media-stream")
+    connect = Connect()
+    stream = Stream(url=f"wss://{host}/media-stream")
     stream.parameter(name="callSid", value=call_sid)
     connect.append(stream)
     response.append(connect)
 
-    print(f"TwiML returned — streaming to wss://{host}/media-stream")
+    print(f"TwiML returned streaming to wss://{host}/media-stream")
     return Response(content=str(response), media_type="application/xml")
 
 
@@ -255,32 +233,40 @@ async def media_stream(websocket: WebSocket):
             deepgram_url,
             additional_headers={"Authorization": f"Token {DEEPGRAM_API_KEY}"},
         ) as deepgram_ws:
+            print("Connected to Deepgram")
 
             async def forward_audio_to_deepgram():
                 nonlocal call_sid
                 try:
                     async for raw_message in websocket.iter_text():
-                        msg   = json.loads(raw_message)
+                        msg = json.loads(raw_message)
                         event = msg.get("event")
 
-                        if event == "start":
-                            start_data    = msg.get("start", {})
+                        if event == "connected":
+                            print("Twilio stream connected")
+
+                        elif event == "start":
+                            start_data = msg.get("start", {})
                             custom_params = start_data.get("customParameters", {})
-                            call_sid      = custom_params.get("callSid") or start_data.get("callSid")
+                            call_sid = custom_params.get("callSid") or start_data.get("callSid")
+                            print(f"Stream started callSid={call_sid}")
 
                         elif event == "media":
                             audio_bytes = base64.b64decode(msg["media"]["payload"])
                             await deepgram_ws.send(audio_bytes)
 
                         elif event == "stop":
+                            print(f"Stream stopped callSid={call_sid}")
                             if call_sid and call_sid in calls_store:
-                                calls_store[call_sid]["status"]   = "resolved"
+                                calls_store[call_sid]["status"] = "resolved"
                                 calls_store[call_sid]["ended_at"] = datetime.utcnow().isoformat()
                             await deepgram_ws.send(json.dumps({"type": "CloseStream"}))
                             break
 
                 except WebSocketDisconnect:
-                    pass
+                    print("Twilio WebSocket disconnected")
+                except Exception as exc:
+                    print(f"Error in forward_audio_to_deepgram: {exc}")
 
             async def receive_transcripts_from_deepgram():
                 pending_groq_task: Optional[asyncio.Task] = None
@@ -296,9 +282,10 @@ async def media_stream(websocket: WebSocket):
                             continue
 
                         transcript = alternatives[0].get("transcript", "").strip()
-                        is_final   = result.get("is_final", False)
+                        is_final = result.get("is_final", False)
 
                         if transcript and is_final:
+                            print(f"[{call_sid}] {transcript}")
                             save_transcription(transcript, call_sid=call_sid)
 
                             if call_sid and call_sid in calls_store:
@@ -310,8 +297,8 @@ async def media_stream(websocket: WebSocket):
                                     analyze_with_groq(call_sid)
                                 )
 
-                except Exception:
-                    pass
+                except Exception as exc:
+                    print(f"Error in receive_transcripts_from_deepgram: {exc}")
 
             task_a = asyncio.create_task(forward_audio_to_deepgram())
             task_b = asyncio.create_task(receive_transcripts_from_deepgram())
@@ -323,23 +310,27 @@ async def media_stream(websocket: WebSocket):
             for task in pending:
                 task.cancel()
 
-    except Exception:
-        pass
+    except Exception as exc:
+        print(f"WebSocket Deepgram error: {exc}")
+
+    print(f"Media stream closed callSid={call_sid}")
 
 
 @app.post("/transfer-call")
 async def transfer_call(request: Request):
-    body     = await request.json()
+    body = await request.json()
     call_sid = body.get("call_sid")
 
     if not call_sid or call_sid not in calls_store:
         return {"error": "Call not found."}
 
+    print(f"Transferring {call_sid} to {FRIEND_PHONE_NUMBER}")
+
     response = VoiceResponse()
     response.dial(FRIEND_PHONE_NUMBER)
 
     twilio_client.calls(call_sid).update(twiml=str(response))
-    calls_store[call_sid]["status"]   = "transferred"
+    calls_store[call_sid]["status"] = "transferred"
     calls_store[call_sid]["ended_at"] = datetime.utcnow().isoformat()
 
     return {"status": "transferred", "to": FRIEND_PHONE_NUMBER}
@@ -347,8 +338,8 @@ async def transfer_call(request: Request):
 
 @app.post("/dispatch")
 async def dispatch_unit(request: Request):
-    body      = await request.json()
-    call_sid  = body.get("call_sid")
+    body = await request.json()
+    call_sid = body.get("call_sid")
     unit_type = body.get("type")
 
     if not call_sid or call_sid not in calls_store:
@@ -359,6 +350,7 @@ async def dispatch_unit(request: Request):
         dispatched.append(unit_type)
     calls_store[call_sid]["status"] = "dispatched"
 
+    print(f"Dispatched {unit_type} to {call_sid}")
     return {"status": "dispatched", "type": unit_type, "call_sid": call_sid}
 
 
@@ -374,7 +366,7 @@ async def get_calls():
         ]
 
         try:
-            started  = datetime.fromisoformat(call["started_at"])
+            started = datetime.fromisoformat(call["started_at"])
             ended_at = call.get("ended_at")
             end_time = datetime.fromisoformat(ended_at) if ended_at else datetime.utcnow()
             duration = int((end_time - started).total_seconds())
@@ -384,24 +376,24 @@ async def get_calls():
         raw_location = groq.get("location", {})
         location = {
             "address": raw_location.get("address") or "Unspecified Location",
-            "lat":     raw_location.get("lat"),
-            "lng":     raw_location.get("lng"),
+            "lat": raw_location.get("lat"),
+            "lng": raw_location.get("lng"),
         }
 
         result.append({
-            "id":                   call_sid,
-            "call_sid":             call_sid,
-            "call_number":          call.get("call_number", 0),
-            "phone":                call["from_number"],
-            "name":                 groq.get("name"),
-            "incident":             groq.get("incident", "Incoming call"),
-            "severity":             groq.get("severity", "medium"),
-            "status":               call["status"],
-            "location":             location,
-            "callDuration":         duration,
-            "dispatched":           call.get("dispatched", []),
-            "transcript":           transcript_entries,
-            "summary":              groq.get("summary", ""),
+            "id": call_sid,
+            "call_sid": call_sid,
+            "call_number": call.get("call_number", 0),
+            "phone": call["from_number"],
+            "name": groq.get("name"),
+            "incident": groq.get("incident", "Incoming call"),
+            "severity": groq.get("severity", "medium"),
+            "status": call["status"],
+            "location": location,
+            "callDuration": duration,
+            "dispatched": call.get("dispatched", []),
+            "transcript": transcript_entries,
+            "summary": groq.get("summary", ""),
             "recommended_dispatch": groq.get("recommended_dispatch", []),
         })
 

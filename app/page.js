@@ -8,7 +8,7 @@ import {
   MapPin, Clock, Phone, User, ChevronDown, Send, Check, X, PhoneForwarded, FileText, Radio
 } from 'lucide-react';
 
-const Map = dynamic(() => import('../components/Map'), {
+const Map = dynamic(() => import('../components/map.js'), {
   ssr: false,
   loading: () => (
     <div style={{ width: '100%', height: '100%', background: 'var(--surface2)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
